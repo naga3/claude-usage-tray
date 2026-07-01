@@ -39,6 +39,10 @@ WSL 側で:
 
 依存: WSL 側に `jq`。Windows 側は標準の PowerShell 5.1 のみ（ビルド不要）。
 
+Win11 では新規トレイアイコンは隠しトレイ（`^`）に入るため、install.sh がレジストリ
+`HKCU\Control Panel\NotifyIconSettings` の `IsPromoted=1` で常時表示領域（時計の隣）に昇格させる。
+出ない場合は `^` から手動でドラッグするか、設定 → 個人用設定 → タスクバー → その他のシステムトレイアイコン で ON にする。
+
 ## アンインストール
 
 ```bash

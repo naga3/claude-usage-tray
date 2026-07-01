@@ -47,23 +47,5 @@ echo "    $STARTUP_WIN"
 echo "==> 起動"
 (cd "$(wslpath "$LOCALAPPDATA_WIN")" && wscript.exe "$(wslpath -w "$VBS")")
 
-echo "==> トレイアイコンを常時表示に昇格 (Win11)"
-# Win11 は新規トレイアイコンを隠しトレイに入れるため、IsPromoted=1 で常時表示領域に出す。
-# アイコン登録を待ってから、powershell.exe 由来のエントリを昇格する。
-sleep 3
-powershell.exe -NoProfile -Command '
-  $base = "HKCU:\Control Panel\NotifyIconSettings"
-  if (Test-Path $base) {
-    Get-ChildItem $base | ForEach-Object {
-      $p = Get-ItemProperty $_.PSPath
-      if ($p.ExecutablePath -like "*WindowsPowerShell*powershell.exe") {
-        Set-ItemProperty $_.PSPath -Name IsPromoted -Value 1 -Type DWord
-        Write-Host "    promoted: $($_.PSChildName)"
-      }
-    }
-  } else {
-    Write-Host "    NotifyIconSettings なし (Win10?) — 手動でドラッグして常時表示にしてください"
-  }' | tr -d '\r'
-
-echo "完了。トレイに数字アイコンが出ます（データが来るまでは '-' 表示）。"
+echo "完了。タスクバー上にテキスト帯、隠しトレイに数字アイコンが出ます（データが来るまでは '-' 表示）。"
 echo "Claude Code で1回応答すると実際の使用率に変わります。"

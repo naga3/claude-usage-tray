@@ -17,6 +17,10 @@ Add-Type -Name Native -Namespace Win32 -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
 [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+[DllImport("user32.dll")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+[DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr hWndParent, IntPtr hWndChildAfter, string lpszClass, string lpszWindow);
+[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 '@
 
 # single instance
@@ -145,27 +149,15 @@ if (-not $NoWidget) {
         [Win32.Native]::SetWindowLong($script:widget.Handle, -20, $ex -bor 0x08000000 -bor 0x80) | Out-Null
     })
 
-    # position: saved -> restore, else centered on the taskbar left of the tray area
-    $loc = $null
+    # position: saved -> restore, else snapped next to the tray area after first show
+    $script:hasSavedPos = $false
     try {
         if (Test-Path $script:posFile) {
             $xy = ([System.IO.File]::ReadAllText($script:posFile)).Split(',')
-            $loc = New-Object System.Drawing.Point ([int]$xy[0]), ([int]$xy[1])
+            $script:widget.Location = New-Object System.Drawing.Point ([int]$xy[0]), ([int]$xy[1])
+            $script:hasSavedPos = $true
         }
     } catch {}
-    if ($null -eq $loc) {
-        $sb = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-        $x = $wa.Right - 430
-        if ($wa.Bottom -lt $sb.Bottom) {
-            # taskbar at bottom: vertically center inside it
-            $y = $wa.Bottom + [int](($sb.Bottom - $wa.Bottom - 24) / 2)
-        } else {
-            $y = $sb.Bottom - 60  # auto-hide taskbar etc: float above bottom edge
-        }
-        $loc = New-Object System.Drawing.Point $x, $y
-    }
-    $script:widget.Location = $loc
 
     # drag to move, save position on release
     $script:dragOff = $null
@@ -222,8 +214,34 @@ $script:timer.Add_Tick({
     try { Update-Tray } finally { $script:busy = $false }
 })
 
+function Snap-WidgetToTray {
+    # place the widget just left of the notification area (^ / IME / battery block)
+    try {
+        $sb = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $x = $wa.Right - 430  # fallback
+        $tray = [Win32.Native]::FindWindow('Shell_TrayWnd', $null)
+        if ($tray -ne [IntPtr]::Zero) {
+            $na = [Win32.Native]::FindWindowEx($tray, [IntPtr]::Zero, 'TrayNotifyWnd', $null)
+            if ($na -ne [IntPtr]::Zero) {
+                $rect = New-Object -TypeName 'Win32.Native+RECT'
+                if ([Win32.Native]::GetWindowRect($na, [ref]$rect) -and $rect.Left -gt 0) {
+                    $x = $rect.Left - $script:widget.Width - 8
+                }
+            }
+        }
+        if ($wa.Bottom -lt $sb.Bottom) {
+            $y = $wa.Bottom + [int](($sb.Bottom - $wa.Bottom - $script:widget.Height) / 2)
+        } else {
+            $y = $sb.Bottom - 60  # auto-hide taskbar etc: float above bottom edge
+        }
+        $script:widget.Location = New-Object System.Drawing.Point $x, $y
+    } catch {}
+}
+
 if ($null -ne $script:widget) { $script:widget.Show() }
 Update-Tray
+if ($null -ne $script:widget -and -not $script:hasSavedPos) { Snap-WidgetToTray }
 $script:timer.Start()
 
 $appContext = New-Object System.Windows.Forms.ApplicationContext

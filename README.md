@@ -16,7 +16,7 @@ Claude Code（Pro/Max サブスク）の **5時間セッション使用率** を
 
 データ源は2段構え。
 
-**メイン: OAuth usage エンドポイント（非公式）** — `ClaudeUsageTray.ps1` が60秒ごとに
+**メイン: OAuth usage エンドポイント（非公式）** — `ClaudeUsageTray.exe` が60秒ごとに
 `~/.claude/.credentials.json` の OAuth トークン（`\\wsl.localhost` 経由で読む）で
 `GET https://api.anthropic.com/api/oauth/usage`（ヘッダ `anthropic-beta: oauth-2025-04-20`）を叩く。
 `five_hour.utilization` / `resets_at`、`seven_day.utilization` が返る。
@@ -87,7 +87,8 @@ WSL 側で:
 
 | 表示 | 意味 |
 |---|---|
-| 白/オレンジ/赤の数字 | 5時間ウィンドウの使用率% |
+| 数字 | 5時間ウィンドウの使用率%（ライトテーマ=黒 / ダークモード=白で自動切替） |
+| リングの色 | 危険度（<70% 青 / 70%〜 黄 / 90%〜 赤） |
 | グレーの `0` | リセット時刻を過ぎた（fileソース時のみ。次の statusline 書き込みで実値に更新） |
 | グレーの `-` | データなし（WSL 未起動 / API 不達かつ statusline 未書き込み） |
 

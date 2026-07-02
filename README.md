@@ -47,6 +47,14 @@ statusline 側の JSON には `rate_limits.five_hour.used_percentage` / `resets_
 
 ## インストール
 
+### 手っ取り早く（zip 版）
+
+[Releases](https://github.com/naga3/claude-usage-tray/releases) の zip を解凍して `ClaudeUsageTray.exe` を実行するだけ。
+Claude Code のログイン情報（`%USERPROFILE%\.claude` → 各 WSL ディストロ）を自動検出する。
+無署名のため SmartScreen 警告あり（詳細情報 → 実行）。自動起動は `shell:startup` にショートカットを置く。
+
+### フルセットアップ（WSL 環境、statusline フォールバック込み）
+
 WSL 側で:
 
 ```bash

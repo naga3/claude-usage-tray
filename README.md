@@ -1,6 +1,8 @@
 # claude-usage-tray
 
-Claude Code（Pro/Max サブスク）の **5時間セッション使用率** を Windows のタスクトレイに常時表示するツール。WSL2 + Windows 環境用。
+Claude Code（Pro/Max サブスク）の **5時間セッション使用率** を Windows のタスクバーに常時表示するツール。WSL2 + Windows 環境用。
+
+本体は C# (WinForms) 製の単一 exe（約20KB）。**Windows 標準搭載の csc.exe (.NET Framework 4.8) でビルドするため、追加インストールは一切不要**（.NET SDK も Visual Studio も要らない）。初代の PowerShell 版は git 履歴（`ae16a33` 以前）にある。
 
 - **タスクバー上に `5h 42% (2h14m)` のテキスト帯を常時表示**（使用率とリセットまでの残り時間。ElevenClock 方式の最前面オーバーレイ。ドラッグで移動でき位置は記憶、フォーカスは奪わない、右クリックメニューで表示切替、`-NoWidget` で無効化）
 - **帯またはトレイアイコンを左クリックでフル詳細ポップアップ**（5h・週次それぞれの使用率／リセット時刻／残り時間、データソース、更新時刻。もう一度クリックで閉じる）
@@ -28,9 +30,17 @@ statusline が書き出したファイルに切り替える。ツールチップ
   └─ 応答のたびに statusline.sh へ JSON を stdin で渡す
        ├─ ~/.claude/usage-monitor/latest.json へアトミック保存
        └─ statusline 表示文字列を stdout（TUI下部に 5h 42% | wk 61% | ctx 8%）
-[ClaudeUsageTray.ps1 (Windows / PowerShell 5.1 + WinForms)]
-  ├─ 60秒ごと: OAuth usage API → ダメなら latest.json
+[ClaudeUsageTray.exe (Windows / C# WinForms, .NET Framework 4.8)]
+  ├─ 60秒ごと: OAuth usage API（バックグラウンドスレッド）→ ダメなら latest.json
   └─ 5秒ごと: 表示更新
+```
+
+パス等の設定は exe と同じディレクトリの `ClaudeUsageTray.cfg`（`キー=値` 形式、install.sh が生成）:
+
+```
+JsonPath=\\wsl.localhost\<distro>\home\<user>\.claude\usage-monitor\latest.json
+CredPath=\\wsl.localhost\<distro>\home\<user>\.claude\.credentials.json
+# IntervalMs=5000 / ApiIntervalSec=60 / NoWidget=1 も指定可
 ```
 
 注意: **statusline はターミナル TUI 専用**で、VSCode 拡張のセッションでは呼ばれない（検証済み）。
@@ -47,11 +57,12 @@ WSL 側で:
 やること:
 
 1. `statusline.sh` を `~/.claude/` に配置し、`~/.claude/settings.json` に `statusLine` を登録（設定済みならスキップ）
-2. `ClaudeUsageTray.ps1` + VBS ランチャーを `%LOCALAPPDATA%\ClaudeUsageTray\` にコピー
-3. スタートアップフォルダに VBS を登録（ログオン時に自動起動、コンソール窓なし）
-4. トレイアプリを即時起動
+2. `build.sh` で `ClaudeUsageTray.cs` を csc.exe でコンパイル（Windows の TEMP でビルドして `dist/` に出力）
+3. 旧インスタンスを停止し、exe + cfg を `%LOCALAPPDATA%\ClaudeUsageTray\` に配置
+4. スタートアップフォルダにショートカットを登録（ログオン時に自動起動）
+5. トレイアプリを即時起動
 
-依存: WSL 側に `jq`。Windows 側は標準の PowerShell 5.1 のみ（ビルド不要）。
+依存: WSL 側に `jq`。Windows 側は OS 標準搭載のもののみ。ビルドだけやり直す場合は `./build.sh`。
 
 数字アイコンは Win11 の仕様で隠しトレイ（`^`）に入る。常時見えるのはテキスト帯の方なのでそのままでよいが、
 アイコンも常時表示したい場合は `^` からドラッグするか、レジストリ `HKCU\Control Panel\NotifyIconSettings` の
@@ -76,5 +87,6 @@ WSL 側で:
 - statusline は **Claude Code が応答した時だけ**更新される。アイドル中は値が止まるが、使用率はアイドル中に増えないので実害はない（リセット越えはグレー `0` でカバー）
 - `rate_limits` はサブスク認証時のみ・セッション初回応答後に出現
 - 複数セッション並行時は last-write-wins（値はアカウント共通なので問題なし）
-- `ClaudeUsageTray.ps1` は PowerShell 5.1 の文字コード事情（BOM なし UTF-8 を誤読）のため ASCII のみで記述している
+- `ClaudeUsageTray.cs` は標準搭載 csc.exe の制約で **C# 5 構文のみ**（文字列補間 `$""` や `?.` は使えない）
 - タスクバー本体への埋め込み API（DeskBand）は Win11 で廃止のため、テキスト帯は「タスクバーに重ねた最前面ウィンドウ」で実現している。全画面アプリの上にも出るので、動画視聴時などは右クリック → Show/Hide taskbar text で消せる
+- exe は無署名なので、他マシンに配る場合は SmartScreen 警告が出る（自分でビルドすれば問題ない）

@@ -2,13 +2,16 @@
 # アンインストール（WSL 側から実行）
 set -euo pipefail
 
-echo "==> トレイアプリを終了（トレイアイコン右クリック→Exit でも可）"
-powershell.exe -NoProfile -Command \
-  "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { \$_.CommandLine -like '*ClaudeUsageTray*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }" || true
+echo "==> トレイアプリを終了"
+powershell.exe -NoProfile -Command "
+  Stop-Process -Name ClaudeUsageTray -Force -ErrorAction SilentlyContinue
+  Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" |
+    Where-Object { \$_.ProcessId -ne \$PID -and \$_.CommandLine -like '*-File *ClaudeUsageTray.ps1*' } |
+    ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" | tr -d '\r' || true
 
 echo "==> スタートアップ登録を削除"
 STARTUP_WIN=$(powershell.exe -NoProfile -Command 'Write-Host -NoNewline ([Environment]::GetFolderPath("Startup"))' | tr -d '\r')
-rm -f "$(wslpath "$STARTUP_WIN")/ClaudeUsageTray.vbs"
+rm -f "$(wslpath "$STARTUP_WIN")/ClaudeUsageTray.lnk" "$(wslpath "$STARTUP_WIN")/ClaudeUsageTray.vbs"
 
 echo "==> Windows 側のファイルを削除"
 LOCALAPPDATA_WIN=$(powershell.exe -NoProfile -Command 'Write-Host -NoNewline $env:LOCALAPPDATA' | tr -d '\r')

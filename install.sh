@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # WSL 側から実行するセットアップスクリプト
-# 1. statusline.sh を ~/.claude/ に配置し settings.json に登録
-# 2. トレイアプリを Windows 側 (%LOCALAPPDATA%\ClaudeUsageTray) にコピー
+# 1. statusline.sh を ~/.claude/ に配置し settings.json に登録（フォールバック用）
+# 2. ClaudeUsageTray.exe をビルドして Windows 側 (%LOCALAPPDATA%\ClaudeUsageTray) に配置
 # 3. スタートアップ登録 + 即時起動
 set -euo pipefail
 
@@ -24,28 +24,44 @@ else
   echo "    settings.json に statusLine を登録"
 fi
 
-echo "==> Windows 側へトレイアプリを配置"
+echo "==> ビルド"
+"$REPO_DIR/build.sh"
+
+echo "==> 既存インスタンスを停止"
+powershell.exe -NoProfile -Command "
+  Stop-Process -Name ClaudeUsageTray -Force -ErrorAction SilentlyContinue
+  Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" |
+    Where-Object { \$_.ProcessId -ne \$PID -and \$_.CommandLine -like '*-File *ClaudeUsageTray.ps1*' } |
+    ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" | tr -d '\r'
+
+echo "==> Windows 側へ配置"
 LOCALAPPDATA_WIN=$(powershell.exe -NoProfile -Command 'Write-Host -NoNewline $env:LOCALAPPDATA' | tr -d '\r')
 DEST=$(wslpath "$LOCALAPPDATA_WIN")/ClaudeUsageTray
 mkdir -p "$DEST"
-cp "$REPO_DIR/ClaudeUsageTray.ps1" "$DEST/"
+cp "$REPO_DIR/dist/ClaudeUsageTray.exe" "$DEST/"
+# 旧 PowerShell 版の残骸を掃除
+rm -f "$DEST/ClaudeUsageTray.ps1" "$DEST/ClaudeUsageTray.vbs"
 
-DEST_WIN=$(wslpath -w "$DEST")
-JSON_WIN_PATH="\\\\wsl.localhost\\${WSL_DISTRO_NAME}$(echo "$HOME" | tr '/' '\\')\\.claude\\usage-monitor\\latest.json"
-
-VBS="$DEST/ClaudeUsageTray.vbs"
-cat > "$VBS" <<EOF
-CreateObject("WScript.Shell").Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""${DEST_WIN}\\ClaudeUsageTray.ps1"" -JsonPath ""${JSON_WIN_PATH}""", 0, False
+HOME_WIN=$(echo "$HOME" | tr '/' '\\')
+cat > "$DEST/ClaudeUsageTray.cfg" <<EOF
+JsonPath=\\\\wsl.localhost\\${WSL_DISTRO_NAME}${HOME_WIN}\\.claude\\usage-monitor\\latest.json
+CredPath=\\\\wsl.localhost\\${WSL_DISTRO_NAME}${HOME_WIN}\\.claude\\.credentials.json
 EOF
+DEST_WIN=$(wslpath -w "$DEST")
 echo "    $DEST_WIN"
 
 echo "==> スタートアップ登録"
-STARTUP_WIN=$(powershell.exe -NoProfile -Command 'Write-Host -NoNewline ([Environment]::GetFolderPath("Startup"))' | tr -d '\r')
-cp "$VBS" "$(wslpath "$STARTUP_WIN")/"
-echo "    $STARTUP_WIN"
+powershell.exe -NoProfile -Command "
+  \$startup = [Environment]::GetFolderPath('Startup')
+  Remove-Item -Path (Join-Path \$startup 'ClaudeUsageTray.vbs') -ErrorAction SilentlyContinue
+  \$ws = New-Object -ComObject WScript.Shell
+  \$lnk = \$ws.CreateShortcut((Join-Path \$startup 'ClaudeUsageTray.lnk'))
+  \$lnk.TargetPath = '${DEST_WIN}\\ClaudeUsageTray.exe'
+  \$lnk.WorkingDirectory = '${DEST_WIN}'
+  \$lnk.Save()
+  Write-Host ('    ' + \$startup + '\ClaudeUsageTray.lnk')" | tr -d '\r'
 
 echo "==> 起動"
-(cd "$(wslpath "$LOCALAPPDATA_WIN")" && wscript.exe "$(wslpath -w "$VBS")")
+(cd "$(wslpath "$LOCALAPPDATA_WIN")" && cmd.exe /c start '' "$DEST_WIN\\ClaudeUsageTray.exe")
 
-echo "完了。タスクバー上にテキスト帯、隠しトレイに数字アイコンが出ます（データが来るまでは '-' 表示）。"
-echo "Claude Code で1回応答すると実際の使用率に変わります。"
+echo "完了。タスクバー上にテキスト帯、隠しトレイに数字アイコンが出ます。"

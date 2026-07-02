@@ -24,8 +24,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Claude Usage Tray")]
 [assembly: AssemblyProduct("ClaudeUsageTray")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace ClaudeUsageTray
 {

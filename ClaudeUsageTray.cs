@@ -476,9 +476,9 @@ namespace ClaudeUsageTray
                 float t = 4.5f;
                 RectangleF ring = new RectangleF(t / 2 + 1, t / 2 + 1, 30 - t, 30 - t);
                 Theme.DrawRing(g, ring, ringPct, severity, t);
-                // number: white fill with a black outline, legible on any taskbar theme
+                // number: black fill with a white outline, legible on any taskbar theme
                 float fs = (num.Length >= 3) ? 13f : (num.Length == 2) ? 16f : 17f;
-                Color ink = (num == "-") ? Theme.InkMuted : Theme.InkPrimary;
+                Color ink = (num == "-") ? Color.FromArgb(70, 70, 70) : Color.Black;
                 using (GraphicsPath tp = new GraphicsPath())
                 using (StringFormat sf = new StringFormat())
                 using (FontFamily fam = new FontFamily("Segoe UI"))
@@ -486,7 +486,7 @@ namespace ClaudeUsageTray
                     sf.Alignment = StringAlignment.Center;
                     sf.LineAlignment = StringAlignment.Center;
                     tp.AddString(num, fam, (int)FontStyle.Bold, fs, new RectangleF(0, 0, 32, 33), sf);
-                    using (Pen outline = new Pen(Color.Black, 3f))
+                    using (Pen outline = new Pen(Color.White, 3f))
                     {
                         outline.LineJoin = LineJoin.Round;
                         g.DrawPath(outline, tp);

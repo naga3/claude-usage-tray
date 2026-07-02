@@ -10,18 +10,30 @@ Claude Code（Pro/Max サブスク）の **5時間セッション使用率** を
 
 ## 仕組み
 
-サブスクの残量を取れる公開 API は存在しないため、Claude Code 公式の **statusline 機構**をデータ源にする。
+データ源は2段構え。
+
+**メイン: OAuth usage エンドポイント（非公式）** — `ClaudeUsageTray.ps1` が60秒ごとに
+`~/.claude/.credentials.json` の OAuth トークン（`\\wsl.localhost` 経由で読む）で
+`GET https://api.anthropic.com/api/oauth/usage`（ヘッダ `anthropic-beta: oauth-2025-04-20`）を叩く。
+`five_hour.utilization` / `resets_at`、`seven_day.utilization` が返る。
+アイドル中でも、VSCode 拡張しか使っていなくても常に最新値が取れる。
+非公式なのでいつ消えても文句は言えない。
+
+**フォールバック: statusline 機構（公式）** — API が使えないとき（トークン失効・エンドポイント廃止等）は
+statusline が書き出したファイルに切り替える。ツールチップ末尾の `api` / `file` でどちらか分かる。
 
 ```
-[Claude Code (WSL)]
+[Claude Code (ターミナルTUI)]
   └─ 応答のたびに statusline.sh へ JSON を stdin で渡す
        ├─ ~/.claude/usage-monitor/latest.json へアトミック保存
-       └─ statusline 表示文字列を stdout
+       └─ statusline 表示文字列を stdout（TUI下部に 5h 42% | wk 61% | ctx 8%）
 [ClaudeUsageTray.ps1 (Windows / PowerShell 5.1 + WinForms)]
-  └─ 5秒ごとに \\wsl.localhost\<distro>\...\latest.json を読んでトレイアイコンを更新
+  ├─ 60秒ごと: OAuth usage API → ダメなら latest.json
+  └─ 5秒ごと: 表示更新
 ```
 
-statusline の JSON には `rate_limits.five_hour.used_percentage` / `resets_at`（5時間ウィンドウ）、`rate_limits.seven_day.*`（週次）、`context_window` などが含まれる。
+注意: **statusline はターミナル TUI 専用**で、VSCode 拡張のセッションでは呼ばれない（検証済み）。
+statusline 側の JSON には `rate_limits.five_hour.used_percentage` / `resets_at`、`rate_limits.seven_day.*`、`context_window` などが含まれる。
 
 ## インストール
 
@@ -55,8 +67,8 @@ WSL 側で:
 | 表示 | 意味 |
 |---|---|
 | 白/オレンジ/赤の数字 | 5時間ウィンドウの使用率% |
-| グレーの `0` | リセット時刻を過ぎた（次の応答で実値に更新） |
-| グレーの `-` | データなし（WSL 未起動 / Claude Code 未応答） |
+| グレーの `0` | リセット時刻を過ぎた（fileソース時のみ。次の statusline 書き込みで実値に更新） |
+| グレーの `-` | データなし（WSL 未起動 / API 不達かつ statusline 未書き込み） |
 
 ## 制約
 

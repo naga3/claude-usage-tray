@@ -6,11 +6,14 @@
 
 param(
     [string]$JsonPath = "\\wsl.localhost\Ubuntu-24.04\home\naga3\.claude\usage-monitor\latest.json",
+    [string]$CredPath = "\\wsl.localhost\Ubuntu-24.04\home\naga3\.claude\.credentials.json",
     [int]$IntervalMs = 5000,
+    [int]$ApiIntervalSec = 60,
     [switch]$NoWidget
 )
 
 $ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -Name Native -Namespace Win32 -MemberDefinition @'
@@ -76,39 +79,78 @@ function ConvertTo-LocalTime($resetsAt) {
     } catch { return $null }
 }
 
-function Update-Tray {
-    $text = '-'; $color = [System.Drawing.Color]::Gray; $tip = 'Claude usage: no data'
-    $wtext = '5h -'
+# primary source: undocumented OAuth usage endpoint (works even when Claude Code
+# is idle or used via the VSCode extension, which never fires the statusline hook)
+$script:apiUsage = $null
+$script:apiFetchedAt = [DateTime]::MinValue
+function Get-ApiUsage {
+    if (((Get-Date) - $script:apiFetchedAt).TotalSeconds -lt $ApiIntervalSec) { return }
+    $script:apiFetchedAt = Get-Date
     try {
-        $raw = [System.IO.File]::ReadAllText($JsonPath, [System.Text.Encoding]::UTF8)
-        $j = $raw | ConvertFrom-Json
-        $fh = $j.rate_limits.five_hour
-        if ($null -ne $fh -and $null -ne $fh.used_percentage) {
-            $pct = [int][math]::Round([double]$fh.used_percentage)
-            $reset = ConvertTo-LocalTime $fh.resets_at
-            $wk = ''
-            $sd = $j.rate_limits.seven_day
-            if ($null -ne $sd -and $null -ne $sd.used_percentage) {
-                $wk = ' | wk ' + [int][math]::Round([double]$sd.used_percentage) + '%'
-            }
-            $upd = [System.IO.File]::GetLastWriteTime($JsonPath).ToString('HH:mm')
-            if ($null -ne $reset -and (Get-Date) -ge $reset) {
-                # 5h window already reset; real value arrives on next Claude response
-                $text = '0'; $color = [System.Drawing.Color]::Gray
-                $tip = "5h: reset done (was $pct%)$wk | upd $upd"
-                $wtext = "5h 0%$wk"
-            } else {
-                $text = "$pct"
-                $color = if ($pct -ge 90) { [System.Drawing.Color]::OrangeRed }
-                         elseif ($pct -ge 70) { [System.Drawing.Color]::Orange }
-                         else { [System.Drawing.Color]::White }
-                $resetStr = if ($null -ne $reset) { ' (reset ' + $reset.ToString('HH:mm') + ')' } else { '' }
-                $tip = "5h $pct%$resetStr$wk | upd $upd"
-                $wtext = "5h $pct%$wk"
+        $cred = [System.IO.File]::ReadAllText($CredPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $tok = $cred.claudeAiOauth.accessToken
+        if (-not $tok) { return }
+        $r = Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -TimeoutSec 5 -Headers @{
+            Authorization = "Bearer $tok"; 'anthropic-beta' = 'oauth-2025-04-20'
+        }
+        if ($null -ne $r.five_hour -and $null -ne $r.five_hour.utilization) {
+            $script:apiUsage = @{
+                pct    = [double]$r.five_hour.utilization
+                reset  = $r.five_hour.resets_at
+                wpct   = $r.seven_day.utilization
+                at     = Get-Date
             }
         }
     } catch {
-        # WSL not running / file missing / broken JSON -> keep gray '-'
+        # WSL down / token expired / endpoint gone -> fall back to statusline file
+    }
+}
+
+function Update-Tray {
+    $text = '-'; $color = [System.Drawing.Color]::Gray; $tip = 'Claude usage: no data'
+    $wtext = '5h -'
+    Get-ApiUsage
+    $pct = $null; $reset = $null; $wk = ''; $upd = ''; $src = ''
+    if ($null -ne $script:apiUsage -and ((Get-Date) - $script:apiUsage.at).TotalSeconds -lt 300) {
+        $pct = [int][math]::Round([double]$script:apiUsage.pct)
+        $reset = ConvertTo-LocalTime $script:apiUsage.reset
+        if ($null -ne $script:apiUsage.wpct) {
+            $wk = ' | wk ' + [int][math]::Round([double]$script:apiUsage.wpct) + '%'
+        }
+        $upd = $script:apiUsage.at.ToString('HH:mm'); $src = 'api'
+    } else {
+        try {
+            $raw = [System.IO.File]::ReadAllText($JsonPath, [System.Text.Encoding]::UTF8)
+            $j = $raw | ConvertFrom-Json
+            $fh = $j.rate_limits.five_hour
+            if ($null -ne $fh -and $null -ne $fh.used_percentage) {
+                $pct = [int][math]::Round([double]$fh.used_percentage)
+                $reset = ConvertTo-LocalTime $fh.resets_at
+                $sd = $j.rate_limits.seven_day
+                if ($null -ne $sd -and $null -ne $sd.used_percentage) {
+                    $wk = ' | wk ' + [int][math]::Round([double]$sd.used_percentage) + '%'
+                }
+                $upd = [System.IO.File]::GetLastWriteTime($JsonPath).ToString('HH:mm'); $src = 'file'
+            }
+        } catch {
+            # WSL not running / file missing / broken JSON -> keep gray '-'
+        }
+    }
+    if ($null -ne $pct) {
+        if ($src -eq 'file' -and $null -ne $reset -and (Get-Date) -ge $reset) {
+            # 5h window already reset; real value arrives on next statusline write
+            $text = '0'; $color = [System.Drawing.Color]::Gray
+            $tip = "5h: reset done (was $pct%)$wk | $src $upd"
+            $wtext = "5h 0%$wk"
+        } else {
+            $text = "$pct"
+            $color = if ($pct -ge 90) { [System.Drawing.Color]::OrangeRed }
+                     elseif ($pct -ge 70) { [System.Drawing.Color]::Orange }
+                     else { [System.Drawing.Color]::White }
+            $resetStr = if ($null -ne $reset) { ' (reset ' + $reset.ToString('HH:mm') + ')' } else { '' }
+            $tip = "5h $pct%$resetStr$wk | $src $upd"
+            $wtext = "5h $pct%$wk"
+        }
     }
     Set-TrayIcon $text $color $tip
     if ($null -ne $script:wlabel) {
@@ -188,7 +230,7 @@ $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miOpen = $menu.Items.Add('Open latest JSON')
 $miOpen.Add_Click({ try { Start-Process notepad.exe -ArgumentList $JsonPath } catch {} })
 $miRefresh = $menu.Items.Add('Refresh now')
-$miRefresh.Add_Click({ Update-Tray })
+$miRefresh.Add_Click({ $script:apiFetchedAt = [DateTime]::MinValue; Update-Tray })
 if ($null -ne $script:widget) {
     $miWidget = $menu.Items.Add('Show/Hide taskbar text')
     $miWidget.Add_Click({ $script:widget.Visible = -not $script:widget.Visible })

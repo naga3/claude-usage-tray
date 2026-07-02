@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
@@ -13,12 +14,18 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+
+[assembly: AssemblyTitle("Claude Usage Tray")]
+[assembly: AssemblyProduct("ClaudeUsageTray")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 
 namespace ClaudeUsageTray
 {
@@ -244,8 +251,8 @@ namespace ClaudeUsageTray
 
     class TrayApp : ApplicationContext
     {
-        string jsonPath = @"\\wsl.localhost\Ubuntu-24.04\home\naga3\.claude\usage-monitor\latest.json";
-        string credPath = @"\\wsl.localhost\Ubuntu-24.04\home\naga3\.claude\.credentials.json";
+        string jsonPath = null; // resolved from cfg, else auto-detected
+        string credPath = null;
         int intervalMs = 5000;
         int apiIntervalSec = 60;
 
@@ -267,6 +274,7 @@ namespace ClaudeUsageTray
         {
             exeDir = Path.GetDirectoryName(Application.ExecutablePath);
             LoadConfig();
+            ResolveDefaultPaths();
 
             notify = new NotifyIcon();
             notify.Visible = true;
@@ -305,6 +313,66 @@ namespace ClaudeUsageTray
                 }
             }
             catch { }
+        }
+
+        // cfg で指定されなかったパスを自動検出する:
+        // 1) ネイティブ Windows の Claude Code (%USERPROFILE%\.claude)
+        // 2) 各 WSL ディストリビューションの \\wsl.localhost\<distro>\home\<user>\.claude
+        void ResolveDefaultPaths()
+        {
+            if (credPath == null)
+            {
+                string native = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".claude", ".credentials.json");
+                try { if (File.Exists(native)) credPath = native; }
+                catch { }
+            }
+            if (credPath == null)
+            {
+                foreach (string distro in ListWslDistros())
+                {
+                    try
+                    {
+                        string homeBase = @"\\wsl.localhost\" + distro + @"\home";
+                        if (!Directory.Exists(homeBase)) continue;
+                        foreach (string userDir in Directory.GetDirectories(homeBase))
+                        {
+                            string c = Path.Combine(userDir, ".claude", ".credentials.json");
+                            if (File.Exists(c)) { credPath = c; break; }
+                        }
+                    }
+                    catch { }
+                    if (credPath != null) break;
+                }
+            }
+            if (jsonPath == null && credPath != null)
+                jsonPath = Path.Combine(Path.GetDirectoryName(credPath), "usage-monitor", "latest.json");
+        }
+
+        static List<string> ListWslDistros()
+        {
+            List<string> list = new List<string>();
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("wsl.exe", "-l -q");
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.CreateNoWindow = true;
+                psi.StandardOutputEncoding = Encoding.Unicode; // wsl.exe outputs UTF-16LE
+                using (Process p = Process.Start(psi))
+                {
+                    string output = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(5000);
+                    foreach (string line in output.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        string t = line.Trim().Trim('\0');
+                        if (t.Length > 0) list.Add(t);
+                    }
+                }
+            }
+            catch { } // WSL not installed
+            return list;
         }
 
         // ---------- data ----------
@@ -346,6 +414,7 @@ namespace ClaudeUsageTray
 
         void MaybeFetchApi()
         {
+            if (credPath == null) return;
             if ((DateTime.Now - lastFetch).TotalSeconds < apiIntervalSec) return;
             if (Interlocked.CompareExchange(ref fetching, 1, 0) != 0) return;
             lastFetch = DateTime.Now;
@@ -403,7 +472,7 @@ namespace ClaudeUsageTray
                 upd = api.At.ToString("HH:mm");
                 src = "api";
             }
-            else
+            else if (jsonPath != null)
             {
                 try
                 {

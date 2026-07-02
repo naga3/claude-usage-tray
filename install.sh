@@ -46,6 +46,8 @@ HOME_WIN=$(echo "$HOME" | tr '/' '\\')
 cat > "$DEST/ClaudeUsageTray.cfg" <<EOF
 JsonPath=\\\\wsl.localhost\\${WSL_DISTRO_NAME}${HOME_WIN}\\.claude\\usage-monitor\\latest.json
 CredPath=\\\\wsl.localhost\\${WSL_DISTRO_NAME}${HOME_WIN}\\.claude\\.credentials.json
+# タスクバー上のテキスト帯を使う場合は 0 に（既定はトレイアイコンのみ）
+NoWidget=1
 EOF
 DEST_WIN=$(wslpath -w "$DEST")
 echo "    $DEST_WIN"
@@ -64,4 +66,20 @@ powershell.exe -NoProfile -Command "
 echo "==> 起動"
 (cd "$(wslpath "$LOCALAPPDATA_WIN")" && cmd.exe /c start '' "$DEST_WIN\\ClaudeUsageTray.exe")
 
-echo "完了。タスクバー上にテキスト帯、隠しトレイに数字アイコンが出ます。"
+echo "==> トレイアイコンを常時表示に昇格 (Win11)"
+sleep 3
+powershell.exe -NoProfile -Command "
+  \$base = 'HKCU:\Control Panel\NotifyIconSettings'
+  if (Test-Path \$base) {
+    Get-ChildItem \$base | ForEach-Object {
+      \$p = Get-ItemProperty \$_.PSPath
+      if (\$p.ExecutablePath -like '*ClaudeUsageTray.exe') {
+        Set-ItemProperty \$_.PSPath -Name IsPromoted -Value 1 -Type DWord
+        Write-Host ('    promoted: ' + \$_.PSChildName)
+      }
+    }
+  } else {
+    Write-Host '    NotifyIconSettings なし (Win10?) — 手動でドラッグして常時表示にしてください'
+  }" | tr -d '\r'
+
+echo "完了。トレイ（時計の並び）にリングゲージアイコンが出ます。"

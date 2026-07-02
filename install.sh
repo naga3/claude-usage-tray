@@ -46,8 +46,6 @@ HOME_WIN=$(echo "$HOME" | tr '/' '\\')
 cat > "$DEST/ClaudeUsageTray.cfg" <<EOF
 JsonPath=\\\\wsl.localhost\\${WSL_DISTRO_NAME}${HOME_WIN}\\.claude\\usage-monitor\\latest.json
 CredPath=\\\\wsl.localhost\\${WSL_DISTRO_NAME}${HOME_WIN}\\.claude\\.credentials.json
-# タスクバー上のテキスト帯を使う場合は 0 に（既定はトレイアイコンのみ）
-NoWidget=1
 EOF
 DEST_WIN=$(wslpath -w "$DEST")
 echo "    $DEST_WIN"
@@ -64,7 +62,7 @@ powershell.exe -NoProfile -Command "
   Write-Host ('    ' + \$startup + '\ClaudeUsageTray.lnk')" | tr -d '\r'
 
 echo "==> 起動"
-(cd "$(wslpath "$LOCALAPPDATA_WIN")" && cmd.exe /c start '' "$DEST_WIN\\ClaudeUsageTray.exe")
+powershell.exe -NoProfile -Command "Start-Process -FilePath '${DEST_WIN}\\ClaudeUsageTray.exe' -WorkingDirectory '${DEST_WIN}'" | tr -d '\r'
 
 echo "==> トレイアイコンを常時表示に昇格 (Win11)"
 sleep 3

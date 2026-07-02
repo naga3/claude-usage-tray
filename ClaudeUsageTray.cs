@@ -138,73 +138,6 @@ namespace ClaudeUsageTray
         }
     }
 
-    // rounded pill on the taskbar: [ring gauge] 71% 2h14m
-    class WidgetForm : OverlayForm
-    {
-        public string PctText = "-";
-        public string Remaining = "";
-        public double RingPct = 0;
-        public Color SeverityColor = Theme.InkMuted;
-
-        static readonly Font PctFont = new Font("Segoe UI Semibold", 10f);
-        static readonly Font RemFont = new Font("Segoe UI", 8.5f);
-        const int H = 28;
-        const int PadX = 11;
-        const int RingSize = 15;
-        const int Gap = 7;
-
-        public void UpdateData(string pctText, string remaining, double ringPct, Color severity)
-        {
-            PctText = pctText; Remaining = remaining; RingPct = ringPct; SeverityColor = severity;
-            using (Graphics g = CreateGraphics())
-            {
-                int w = PadX + RingSize + Gap + (int)Math.Ceiling(g.MeasureString(PctText, PctFont).Width);
-                if (Remaining.Length > 0)
-                    w += 2 + (int)Math.Ceiling(g.MeasureString(Remaining, RemFont).Width);
-                w += PadX;
-                if (Width != w || Height != H) { Size = new Size(w, H); Theme.ApplyRounded(this, H / 2); }
-            }
-            Invalidate();
-        }
-
-        protected override void OnHandleCreated(EventArgs e)
-        {
-            base.OnHandleCreated(e);
-            Size = new Size(110, H);
-            Theme.ApplyRounded(this, H / 2);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-
-            Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (GraphicsPath pill = Theme.RoundedRect(r, r.Height / 2))
-            {
-                using (SolidBrush b = new SolidBrush(Theme.Surface)) g.FillPath(b, pill);
-                using (Pen p = new Pen(Theme.Hairline)) g.DrawPath(p, pill);
-            }
-
-            float t = 2.6f;
-            RectangleF ring = new RectangleF(PadX + t / 2, (H - RingSize) / 2f + t / 2, RingSize - t, RingSize - t);
-            Theme.DrawRing(g, ring, RingPct, SeverityColor, t);
-
-            float x = PadX + RingSize + Gap;
-            Color pctInk = (PctText == "-") ? Theme.InkMuted : Theme.InkPrimary;
-            SizeF ps = g.MeasureString(PctText, PctFont);
-            using (SolidBrush b = new SolidBrush(pctInk))
-                g.DrawString(PctText, PctFont, b, x, (H - ps.Height) / 2f);
-            if (Remaining.Length > 0)
-            {
-                SizeF rs = g.MeasureString(Remaining, RemFont);
-                using (SolidBrush b = new SolidBrush(Theme.InkMuted))
-                    g.DrawString(Remaining, RemFont, b, x + ps.Width + 2, (H - rs.Height) / 2f + 0.5f);
-            }
-        }
-    }
-
     // detail card: title, two meter rows (5h / week), footer
     class PopupForm : OverlayForm
     {
@@ -315,13 +248,10 @@ namespace ClaudeUsageTray
         string credPath = @"\\wsl.localhost\Ubuntu-24.04\home\naga3\.claude\.credentials.json";
         int intervalMs = 5000;
         int apiIntervalSec = 60;
-        bool noWidget = false;
 
         string exeDir;
-        string posFile;
 
         NotifyIcon notify;
-        WidgetForm widget;
         PopupForm popup;
         System.Windows.Forms.Timer timer;
         IntPtr prevIconHandle = IntPtr.Zero;
@@ -332,20 +262,15 @@ namespace ClaudeUsageTray
         int fetching = 0;
 
         LastShown last = null;
-        bool hasSavedPos = false;
-        Point? dragOff = null;
-        Point dragStart;
 
         public TrayApp()
         {
             exeDir = Path.GetDirectoryName(Application.ExecutablePath);
-            posFile = Path.Combine(exeDir, "widget-pos.txt");
             LoadConfig();
 
             notify = new NotifyIcon();
             notify.Visible = true;
 
-            if (!noWidget) BuildWidget();
             popup = new PopupForm();
             popup.Click += delegate(object s, EventArgs e) { popup.Hide(); };
             BuildMenu();
@@ -356,11 +281,6 @@ namespace ClaudeUsageTray
 
             MaybeFetchApi();
             UpdateTray();
-            if (widget != null)
-            {
-                widget.Show();
-                if (!hasSavedPos) SnapWidgetToTray();
-            }
             timer.Start();
         }
 
@@ -382,7 +302,6 @@ namespace ClaudeUsageTray
                     else if (key == "CredPath") credPath = val;
                     else if (key == "IntervalMs") intervalMs = int.Parse(val);
                     else if (key == "ApiIntervalSec") apiIntervalSec = int.Parse(val);
-                    else if (key == "NoWidget") noWidget = (val == "1" || val.ToLower() == "true");
                 }
             }
             catch { }
@@ -512,7 +431,7 @@ namespace ClaudeUsageTray
             l.Pct = pct; l.Reset = reset; l.WPct = wpct; l.WReset = wreset; l.Src = src; l.Upd = upd;
             last = l;
 
-            string pctText = "-", remText = "", tip = "Claude usage: no data";
+            string tip = "Claude usage: no data";
             double ringPct = 0;
             Color sev = Theme.InkMuted;
             string iconNum = "-";
@@ -523,24 +442,20 @@ namespace ClaudeUsageTray
                 if (src == "file" && reset != null && DateTime.Now >= reset.Value)
                 {
                     // 5h window already reset; real value arrives on next statusline write
-                    pctText = "0%"; iconNum = "0"; ringPct = 0; sev = Theme.InkMuted;
+                    iconNum = "0"; ringPct = 0; sev = Theme.InkMuted;
                     tip = string.Format("5h: reset done (was {0}%){1} | {2} {3}", pct, wk, src, upd);
                 }
                 else
                 {
-                    pctText = pct.Value + "%";
                     iconNum = pct.Value.ToString();
                     ringPct = pct.Value;
                     sev = Theme.Severity(pct.Value);
-                    if (reset != null && (reset.Value - DateTime.Now).TotalSeconds > 0)
-                        remText = FormatRemaining(reset.Value);
                     string resetStr = (reset != null) ? " (reset " + reset.Value.ToString("HH:mm") + ")" : "";
                     tip = string.Format("5h {0}%{1}{2} | {3} {4}", pct, resetStr, wk, src, upd);
                 }
             }
 
             SetTrayIcon(iconNum, ringPct, sev, tip);
-            if (widget != null) widget.UpdateData(pctText, remText, ringPct, sev);
             if (popup != null)
             {
                 popup.Data = last;
@@ -561,15 +476,23 @@ namespace ClaudeUsageTray
                 float t = 4.5f;
                 RectangleF ring = new RectangleF(t / 2 + 1, t / 2 + 1, 30 - t, 30 - t);
                 Theme.DrawRing(g, ring, ringPct, severity, t);
-                float fs = (num.Length >= 3) ? 10f : (num.Length == 2) ? 12f : 13f;
+                // number: white fill with a black outline, legible on any taskbar theme
+                float fs = (num.Length >= 3) ? 13f : (num.Length == 2) ? 16f : 17f;
                 Color ink = (num == "-") ? Theme.InkMuted : Theme.InkPrimary;
-                using (Font font = new Font("Segoe UI", fs, FontStyle.Bold, GraphicsUnit.Pixel))
-                using (SolidBrush brush = new SolidBrush(ink))
+                using (GraphicsPath tp = new GraphicsPath())
                 using (StringFormat sf = new StringFormat())
+                using (FontFamily fam = new FontFamily("Segoe UI"))
                 {
                     sf.Alignment = StringAlignment.Center;
                     sf.LineAlignment = StringAlignment.Center;
-                    g.DrawString(num, font, brush, new RectangleF(0, 0, 32, 33), sf);
+                    tp.AddString(num, fam, (int)FontStyle.Bold, fs, new RectangleF(0, 0, 32, 33), sf);
+                    using (Pen outline = new Pen(Color.Black, 3f))
+                    {
+                        outline.LineJoin = LineJoin.Round;
+                        g.DrawPath(outline, tp);
+                    }
+                    using (SolidBrush fill = new SolidBrush(ink))
+                        g.FillPath(fill, tp);
                 }
             }
             IntPtr hIcon = bmp.GetHicon();
@@ -581,78 +504,6 @@ namespace ClaudeUsageTray
             prevIconHandle = hIcon;
         }
 
-        // ---------- widget ----------
-
-        void BuildWidget()
-        {
-            widget = new WidgetForm();
-
-            // saved position wins over auto-snap
-            try
-            {
-                if (File.Exists(posFile))
-                {
-                    string[] xy = File.ReadAllText(posFile).Split(',');
-                    widget.Location = new Point(int.Parse(xy[0]), int.Parse(xy[1]));
-                    hasSavedPos = true;
-                }
-            }
-            catch { }
-
-            // drag to move (saved on release); a click without movement toggles the detail popup
-            widget.MouseDown += delegate(object s, MouseEventArgs e)
-            {
-                if (e.Button == MouseButtons.Left) { dragOff = e.Location; dragStart = Cursor.Position; }
-            };
-            widget.MouseMove += delegate(object s, MouseEventArgs e)
-            {
-                if (dragOff != null)
-                {
-                    Point p = Cursor.Position;
-                    widget.Location = new Point(p.X - dragOff.Value.X, p.Y - dragOff.Value.Y);
-                }
-            };
-            widget.MouseUp += delegate(object s, MouseEventArgs e)
-            {
-                if (dragOff == null) return;
-                dragOff = null;
-                Point p = Cursor.Position;
-                int moved = Math.Abs(p.X - dragStart.X) + Math.Abs(p.Y - dragStart.Y);
-                if (moved < 5) TogglePopup();
-                else
-                {
-                    try { File.WriteAllText(posFile, widget.Location.X + "," + widget.Location.Y); }
-                    catch { }
-                }
-            };
-        }
-
-        void SnapWidgetToTray()
-        {
-            // place the widget just left of the notification area (^ / IME / battery block)
-            try
-            {
-                Rectangle sb = Screen.PrimaryScreen.Bounds;
-                Rectangle wa = Screen.PrimaryScreen.WorkingArea;
-                int x = wa.Right - 430; // fallback
-                IntPtr tray = Native.FindWindow("Shell_TrayWnd", null);
-                if (tray != IntPtr.Zero)
-                {
-                    IntPtr na = Native.FindWindowEx(tray, IntPtr.Zero, "TrayNotifyWnd", null);
-                    Native.RECT rect;
-                    if (na != IntPtr.Zero && Native.GetWindowRect(na, out rect) && rect.Left > 0)
-                        x = rect.Left - widget.Width - 8;
-                }
-                int y;
-                if (wa.Bottom < sb.Bottom)
-                    y = wa.Bottom + (sb.Bottom - wa.Bottom - widget.Height) / 2;
-                else
-                    y = sb.Bottom - 60; // auto-hide taskbar etc: float above bottom edge
-                widget.Location = new Point(x, y);
-            }
-            catch { }
-        }
-
         // ---------- popup ----------
 
         void TogglePopup()
@@ -660,7 +511,7 @@ namespace ClaudeUsageTray
             if (popup.Visible) { popup.Hide(); return; }
             popup.Data = last;
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
-            int ax = (widget != null) ? widget.Location.X : Cursor.Position.X;
+            int ax = Cursor.Position.X - popup.Width / 2;
             int x = Math.Max(wa.Left + 8, Math.Min(ax, wa.Right - popup.Width - 8));
             int y = wa.Bottom - popup.Height - 8;
             popup.Location = new Point(x, y);
@@ -684,25 +535,16 @@ namespace ClaudeUsageTray
                 MaybeFetchApi();
                 UpdateTray();
             };
-            if (widget != null)
-            {
-                menu.Items.Add("Show/Hide taskbar text").Click += delegate(object s, EventArgs e)
-                {
-                    widget.Visible = !widget.Visible;
-                };
-            }
             menu.Items.Add("-");
             menu.Items.Add("Exit").Click += delegate(object s, EventArgs e)
             {
                 timer.Stop();
                 notify.Visible = false;
                 notify.Dispose();
-                if (widget != null) widget.Close();
                 if (popup != null) popup.Close();
                 ExitThread();
             };
             notify.ContextMenuStrip = menu;
-            if (widget != null) widget.ContextMenuStrip = menu;
             notify.MouseClick += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button == MouseButtons.Left) TogglePopup();

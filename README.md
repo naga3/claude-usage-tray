@@ -8,7 +8,6 @@ Claude Code（Pro/Max サブスク）の **5時間セッション使用率** を
 - **左クリックでフル詳細ポップアップ**（5h・週次のメーターバー／リセット時刻／残り時間、データソース、更新時刻。もう一度クリックで閉じる）
 - ホバーで概要ツールチップ
 - 右クリックで JSON 確認 / 手動更新 / 終了
-- おまけ: タスクバー上に置ける角丸ピルのテキスト帯（`5h 42% (2h14m)` + ミニリングゲージ）もあり。既定は無効、cfg の `NoWidget=0` で有効化（ドラッグ移動・位置記憶つき）
 - おまけで Claude Code の statusline にも `5h 42% | wk 61% | ctx 8%` を表示
 
 ## 仕組み
@@ -40,7 +39,7 @@ statusline が書き出したファイルに切り替える。ツールチップ
 ```
 JsonPath=\\wsl.localhost\<distro>\home\<user>\.claude\usage-monitor\latest.json
 CredPath=\\wsl.localhost\<distro>\home\<user>\.claude\.credentials.json
-# IntervalMs=5000 / ApiIntervalSec=60 / NoWidget=1 も指定可
+# IntervalMs=5000 / ApiIntervalSec=60 も指定可
 ```
 
 注意: **statusline はターミナル TUI 専用**で、VSCode 拡張のセッションでは呼ばれない（検証済み）。
@@ -64,9 +63,9 @@ WSL 側で:
 
 依存: WSL 側に `jq`。Windows 側は OS 標準搭載のもののみ。ビルドだけやり直す場合は `./build.sh`。
 
-数字アイコンは Win11 の仕様で隠しトレイ（`^`）に入る。常時見えるのはテキスト帯の方なのでそのままでよいが、
-アイコンも常時表示したい場合は `^` からドラッグするか、レジストリ `HKCU\Control Panel\NotifyIconSettings` の
-該当エントリで `IsPromoted=1` にする。
+トレイアイコンは Win11 の仕様では隠しトレイ（`^`）に入るが、install.sh がレジストリ
+`HKCU\Control Panel\NotifyIconSettings` の `IsPromoted=1` で常時表示（時計の並び）に昇格させる。
+出ない場合は `^` からドラッグするか、設定 → 個人用設定 → タスクバー → その他のシステムトレイアイコン で ON。
 
 ## アンインストール
 
@@ -88,5 +87,4 @@ WSL 側で:
 - `rate_limits` はサブスク認証時のみ・セッション初回応答後に出現
 - 複数セッション並行時は last-write-wins（値はアカウント共通なので問題なし）
 - `ClaudeUsageTray.cs` は標準搭載 csc.exe の制約で **C# 5 構文のみ**（文字列補間 `$""` や `?.` は使えない）
-- タスクバー本体への埋め込み API（DeskBand）は Win11 で廃止のため、テキスト帯は「タスクバーに重ねた最前面ウィンドウ」で実現している。全画面アプリの上にも出るので、動画視聴時などは右クリック → Show/Hide taskbar text で消せる
 - exe は無署名なので、他マシンに配る場合は SmartScreen 警告が出る（自分でビルドすれば問題ない）

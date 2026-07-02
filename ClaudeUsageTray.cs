@@ -555,12 +555,14 @@ namespace ClaudeUsageTray
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 g.Clear(Color.Transparent);
-                float t = 4.5f;
-                RectangleF ring = new RectangleF(t / 2 + 1, t / 2 + 1, 30 - t, 30 - t);
+                // full-bleed ring: tray icons are capped at 16 logical px by Windows,
+                // so use every pixel of the canvas
+                float t = 5f;
+                RectangleF ring = new RectangleF(t / 2 + 0.2f, t / 2 + 0.2f, 31.6f - t, 31.6f - t);
                 Theme.DrawRing(g, ring, ringPct, severity, t);
                 // number: black on light theme, white on dark theme (redrawn every tick,
                 // so a theme switch is picked up within seconds)
-                float fs = (num.Length >= 3) ? 13f : (num.Length == 2) ? 16f : 17f;
+                float fs = (num.Length >= 3) ? 14f : (num.Length == 2) ? 17.5f : 18f;
                 Color ink = (num == "-") ? Theme.InkMuted
                           : IsSystemLightTheme() ? Color.Black : Color.White;
                 using (Font font = new Font("Segoe UI", fs, FontStyle.Bold, GraphicsUnit.Pixel))

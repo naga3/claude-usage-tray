@@ -534,6 +534,19 @@ namespace ClaudeUsageTray
 
         // ---------- icon (ring gauge + number) ----------
 
+        static bool IsSystemLightTheme()
+        {
+            // taskbar/tray follows SystemUsesLightTheme (not AppsUseLightTheme)
+            try
+            {
+                object v = Microsoft.Win32.Registry.GetValue(
+                    @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                    "SystemUsesLightTheme", 0);
+                return v != null && Convert.ToInt32(v) == 1;
+            }
+            catch { return false; }
+        }
+
         void SetTrayIcon(string num, double ringPct, Color severity, string tip)
         {
             Bitmap bmp = new Bitmap(32, 32);
@@ -545,23 +558,18 @@ namespace ClaudeUsageTray
                 float t = 4.5f;
                 RectangleF ring = new RectangleF(t / 2 + 1, t / 2 + 1, 30 - t, 30 - t);
                 Theme.DrawRing(g, ring, ringPct, severity, t);
-                // number: black fill with a white outline, legible on any taskbar theme
+                // number: black on light theme, white on dark theme (redrawn every tick,
+                // so a theme switch is picked up within seconds)
                 float fs = (num.Length >= 3) ? 13f : (num.Length == 2) ? 16f : 17f;
-                Color ink = (num == "-") ? Color.FromArgb(70, 70, 70) : Color.Black;
-                using (GraphicsPath tp = new GraphicsPath())
+                Color ink = (num == "-") ? Theme.InkMuted
+                          : IsSystemLightTheme() ? Color.Black : Color.White;
+                using (Font font = new Font("Segoe UI", fs, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (SolidBrush brush = new SolidBrush(ink))
                 using (StringFormat sf = new StringFormat())
-                using (FontFamily fam = new FontFamily("Segoe UI"))
                 {
                     sf.Alignment = StringAlignment.Center;
                     sf.LineAlignment = StringAlignment.Center;
-                    tp.AddString(num, fam, (int)FontStyle.Bold, fs, new RectangleF(0, 0, 32, 33), sf);
-                    using (Pen outline = new Pen(Color.White, 3f))
-                    {
-                        outline.LineJoin = LineJoin.Round;
-                        g.DrawPath(outline, tp);
-                    }
-                    using (SolidBrush fill = new SolidBrush(ink))
-                        g.FillPath(fill, tp);
+                    g.DrawString(num, font, brush, new RectangleF(0, 0, 32, 33), sf);
                 }
             }
             IntPtr hIcon = bmp.GetHicon();

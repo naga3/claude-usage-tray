@@ -98,6 +98,7 @@ function Get-ApiUsage {
                 pct    = [double]$r.five_hour.utilization
                 reset  = $r.five_hour.resets_at
                 wpct   = $r.seven_day.utilization
+                wreset = $r.seven_day.resets_at
                 at     = Get-Date
             }
         }
@@ -106,17 +107,38 @@ function Get-ApiUsage {
     }
 }
 
+function Format-Remaining([DateTime]$target) {
+    $ts = $target - (Get-Date)
+    if ($ts.TotalSeconds -le 0) { return 'now' }
+    if ($ts.TotalHours -ge 24) { return '{0}d{1}h' -f [int][math]::Floor($ts.TotalDays), $ts.Hours }
+    if ($ts.TotalMinutes -ge 60) { return '{0}h{1:00}m' -f [int][math]::Floor($ts.TotalHours), $ts.Minutes }
+    return '{0}m' -f [int][math]::Ceiling($ts.TotalMinutes)
+}
+
+$script:last = $null
+function Build-DetailText {
+    $l = $script:last
+    if ($null -eq $l -or $null -eq $l.pct) { return 'Claude usage: no data' }
+    $s = "5h   : $($l.pct)%"
+    if ($null -ne $l.reset) { $s += '   resets ' + $l.reset.ToString('HH:mm') + ' (in ' + (Format-Remaining $l.reset) + ')' }
+    if ($null -ne $l.wpct) {
+        $s += "`nweek : " + [int][math]::Round([double]$l.wpct) + '%'
+        if ($null -ne $l.wreset) { $s += '   resets ' + $l.wreset.ToString('MM/dd HH:mm') + ' (in ' + (Format-Remaining $l.wreset) + ')' }
+    }
+    $s += "`nsrc  : $($l.src)   updated $($l.upd)"
+    return $s
+}
+
 function Update-Tray {
     $text = '-'; $color = [System.Drawing.Color]::Gray; $tip = 'Claude usage: no data'
     $wtext = '5h -'
     Get-ApiUsage
-    $pct = $null; $reset = $null; $wk = ''; $upd = ''; $src = ''
+    $pct = $null; $reset = $null; $wpct = $null; $wreset = $null; $upd = ''; $src = ''
     if ($null -ne $script:apiUsage -and ((Get-Date) - $script:apiUsage.at).TotalSeconds -lt 300) {
         $pct = [int][math]::Round([double]$script:apiUsage.pct)
         $reset = ConvertTo-LocalTime $script:apiUsage.reset
-        if ($null -ne $script:apiUsage.wpct) {
-            $wk = ' | wk ' + [int][math]::Round([double]$script:apiUsage.wpct) + '%'
-        }
+        $wpct = $script:apiUsage.wpct
+        $wreset = ConvertTo-LocalTime $script:apiUsage.wreset
         $upd = $script:apiUsage.at.ToString('HH:mm'); $src = 'api'
     } else {
         try {
@@ -128,7 +150,8 @@ function Update-Tray {
                 $reset = ConvertTo-LocalTime $fh.resets_at
                 $sd = $j.rate_limits.seven_day
                 if ($null -ne $sd -and $null -ne $sd.used_percentage) {
-                    $wk = ' | wk ' + [int][math]::Round([double]$sd.used_percentage) + '%'
+                    $wpct = $sd.used_percentage
+                    $wreset = ConvertTo-LocalTime $sd.resets_at
                 }
                 $upd = [System.IO.File]::GetLastWriteTime($JsonPath).ToString('HH:mm'); $src = 'file'
             }
@@ -136,12 +159,14 @@ function Update-Tray {
             # WSL not running / file missing / broken JSON -> keep gray '-'
         }
     }
+    $script:last = @{ pct = $pct; reset = $reset; wpct = $wpct; wreset = $wreset; src = $src; upd = $upd }
+    $wk = if ($null -ne $wpct) { ' | wk ' + [int][math]::Round([double]$wpct) + '%' } else { '' }
     if ($null -ne $pct) {
         if ($src -eq 'file' -and $null -ne $reset -and (Get-Date) -ge $reset) {
             # 5h window already reset; real value arrives on next statusline write
             $text = '0'; $color = [System.Drawing.Color]::Gray
             $tip = "5h: reset done (was $pct%)$wk | $src $upd"
-            $wtext = "5h 0%$wk"
+            $wtext = '5h 0%'
         } else {
             $text = "$pct"
             $color = if ($pct -ge 90) { [System.Drawing.Color]::OrangeRed }
@@ -149,7 +174,11 @@ function Update-Tray {
                      else { [System.Drawing.Color]::White }
             $resetStr = if ($null -ne $reset) { ' (reset ' + $reset.ToString('HH:mm') + ')' } else { '' }
             $tip = "5h $pct%$resetStr$wk | $src $upd"
-            $wtext = "5h $pct%$wk"
+            $rem = ''
+            if ($null -ne $reset -and ($reset - (Get-Date)).TotalSeconds -gt 0) {
+                $rem = ' (' + (Format-Remaining $reset) + ')'
+            }
+            $wtext = "5h $pct%$rem"
         }
     }
     Set-TrayIcon $text $color $tip
@@ -157,6 +186,9 @@ function Update-Tray {
         $script:wlabel.Text = $wtext
         $script:wlabel.ForeColor = $color
         $script:widget.TopMost = $true  # re-assert above the taskbar
+    }
+    if ($null -ne $script:popup -and $script:popup.Visible) {
+        $script:plabel.Text = Build-DetailText
     }
 }
 
@@ -201,11 +233,15 @@ if (-not $NoWidget) {
         }
     } catch {}
 
-    # drag to move, save position on release
+    # drag to move (saved on release); a click without movement toggles the detail popup
     $script:dragOff = $null
+    $script:dragStart = $null
     $script:wlabel.Add_MouseDown({
         param($s, $e)
-        if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { $script:dragOff = $e.Location }
+        if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+            $script:dragOff = $e.Location
+            $script:dragStart = [System.Windows.Forms.Cursor]::Position
+        }
     })
     $script:wlabel.Add_MouseMove({
         param($s, $e)
@@ -218,12 +254,53 @@ if (-not $NoWidget) {
         param($s, $e)
         if ($null -ne $script:dragOff) {
             $script:dragOff = $null
-            try {
-                if (-not (Test-Path $script:cfgDir)) { New-Item -ItemType Directory -Path $script:cfgDir | Out-Null }
-                [System.IO.File]::WriteAllText($script:posFile, "$($script:widget.Location.X),$($script:widget.Location.Y)")
-            } catch {}
+            $p = [System.Windows.Forms.Cursor]::Position
+            $moved = [math]::Abs($p.X - $script:dragStart.X) + [math]::Abs($p.Y - $script:dragStart.Y)
+            if ($moved -lt 5) {
+                Toggle-Popup
+            } else {
+                try {
+                    if (-not (Test-Path $script:cfgDir)) { New-Item -ItemType Directory -Path $script:cfgDir | Out-Null }
+                    [System.IO.File]::WriteAllText($script:posFile, "$($script:widget.Location.X),$($script:widget.Location.Y)")
+                } catch {}
+            }
         }
     })
+}
+
+# --- full usage detail popup (left click on widget or tray icon) ---
+$script:popup = New-Object System.Windows.Forms.Form
+$script:popup.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$script:popup.ShowInTaskbar = $false
+$script:popup.TopMost = $true
+$script:popup.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+$script:popup.BackColor = [System.Drawing.Color]::FromArgb(24, 24, 24)
+$script:popup.AutoSize = $true
+$script:popup.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$script:plabel = New-Object System.Windows.Forms.Label
+$script:plabel.AutoSize = $true
+$script:plabel.Font = New-Object System.Drawing.Font('Consolas', 10)
+$script:plabel.ForeColor = [System.Drawing.Color]::White
+$script:plabel.BackColor = $script:popup.BackColor
+$script:plabel.Padding = New-Object System.Windows.Forms.Padding 12, 8, 12, 8
+$script:popup.Controls.Add($script:plabel)
+$script:popup.Add_HandleCreated({
+    $ex = [Win32.Native]::GetWindowLong($script:popup.Handle, -20)
+    [Win32.Native]::SetWindowLong($script:popup.Handle, -20, $ex -bor 0x08000000 -bor 0x80) | Out-Null
+})
+$script:plabel.Add_Click({ $script:popup.Hide() })
+
+function Toggle-Popup {
+    if ($script:popup.Visible) { $script:popup.Hide(); return }
+    $script:plabel.Text = Build-DetailText
+    $script:popup.PerformLayout()
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $ax = if ($null -ne $script:widget) { $script:widget.Location.X } else { [System.Windows.Forms.Cursor]::Position.X }
+    $x = [math]::Max($wa.Left + 8, [math]::Min($ax, $wa.Right - $script:popup.Width - 8))
+    $y = $wa.Bottom - $script:popup.Height - 8
+    $script:popup.Location = New-Object System.Drawing.Point $x, $y
+    $script:popup.Show()
+    $script:popup.TopMost = $true
 }
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
@@ -246,6 +323,10 @@ $miExit.Add_Click({
 })
 $script:notify.ContextMenuStrip = $menu
 if ($null -ne $script:wlabel) { $script:wlabel.ContextMenuStrip = $menu }
+$script:notify.Add_MouseClick({
+    param($s, $e)
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Toggle-Popup }
+})
 
 $script:timer = New-Object System.Windows.Forms.Timer
 $script:timer.Interval = $IntervalMs

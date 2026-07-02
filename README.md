@@ -1,5 +1,7 @@
 # claude-usage-tray
 
+<img width="343" height="229" alt="image" src="https://github.com/user-attachments/assets/73d19c74-5ac2-40a6-b196-210733106d40" />
+
 Claude Code（Pro/Max サブスク）の **5時間セッション使用率** を Windows のタスクバーに常時表示するツール。WSL2 + Windows 環境用。
 
 本体は C# (WinForms) 製の単一 exe（約20KB）。**Windows 標準搭載の csc.exe (.NET Framework 4.8) でビルドするため、追加インストールは一切不要**（.NET SDK も Visual Studio も要らない）。初代の PowerShell 版は git 履歴（`ae16a33` 以前）にある。

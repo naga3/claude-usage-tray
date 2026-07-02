@@ -562,7 +562,7 @@ namespace ClaudeUsageTray
                 Theme.DrawRing(g, ring, ringPct, severity, t);
                 // number: black on light theme, white on dark theme (redrawn every tick,
                 // so a theme switch is picked up within seconds)
-                float fs = (num.Length >= 3) ? 14f : (num.Length == 2) ? 17.5f : 18f;
+                float fs = (num.Length >= 3) ? 13f : (num.Length == 2) ? 16f : 17f;
                 Color ink = (num == "-") ? Theme.InkMuted
                           : IsSystemLightTheme() ? Color.Black : Color.White;
                 using (Font font = new Font("Segoe UI", fs, FontStyle.Bold, GraphicsUnit.Pixel))

@@ -1,5 +1,6 @@
-// Claude Usage Tray (C# port of ClaudeUsageTray.ps1)
-// Shows Claude Code 5-hour session usage as a tray icon + a text strip on the taskbar.
+// Claude Usage Tray
+// Shows Claude Code 5-hour session usage as a ring-gauge tray icon + a rounded
+// pill overlaid on the taskbar; click opens a detail popup with meter bars.
 // Data: OAuth usage API (primary) with statusline file fallback, both read via \\wsl.localhost.
 // Target: .NET Framework 4.8, compiled with the in-box csc.exe (C# 5 syntax only).
 
@@ -27,8 +28,89 @@ namespace ClaudeUsageTray
         [DllImport("user32.dll")] public static extern IntPtr FindWindow(string cls, string win);
         [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string win);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+        [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT { public int Left, Top, Right, Bottom; }
+    }
+
+    // Design tokens: dataviz reference palette, dark surface. Severity rides the
+    // marks (ring / meter fill); text always wears ink tokens, never the data color.
+    static class Theme
+    {
+        public static readonly Color Surface = Color.FromArgb(26, 26, 25);        // #1a1a19
+        public static readonly Color SurfaceHi = Color.FromArgb(34, 34, 33);      // popup card
+        public static readonly Color InkPrimary = Color.White;
+        public static readonly Color InkSecondary = Color.FromArgb(195, 194, 183); // #c3c2b7
+        public static readonly Color InkMuted = Color.FromArgb(137, 135, 129);    // #898781
+        public static readonly Color Hairline = Color.FromArgb(26, 255, 255, 255);
+        public static readonly Color Accent = Color.FromArgb(57, 135, 229);       // #3987e5
+        public static readonly Color Warning = Color.FromArgb(250, 178, 25);      // #fab219
+        public static readonly Color Critical = Color.FromArgb(208, 59, 59);      // #d03b3b
+
+        public static Color Severity(int pct)
+        {
+            return (pct >= 90) ? Critical : (pct >= 70) ? Warning : Accent;
+        }
+
+        public static Color Track(Color severity)
+        {
+            // unfilled track = translucent step of the fill's own hue
+            return Color.FromArgb(56, severity);
+        }
+
+        public static GraphicsPath RoundedRect(Rectangle r, int radius)
+        {
+            GraphicsPath p = new GraphicsPath();
+            int d = radius * 2;
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        public static void ApplyRounded(Form f, int fallbackRadius)
+        {
+            int pref = 2; // DWMWCP_ROUND (Win11)
+            int hr = -1;
+            try { hr = Native.DwmSetWindowAttribute(f.Handle, 33, ref pref, 4); }
+            catch { }
+            if (hr != 0) // Win10: clip with a region instead
+                f.Region = new Region(RoundedRect(new Rectangle(0, 0, f.Width, f.Height), fallbackRadius));
+        }
+
+        public static void DrawMeter(Graphics g, Rectangle r, double pct, Color severity)
+        {
+            using (GraphicsPath track = RoundedRect(r, r.Height / 2))
+            using (SolidBrush tb = new SolidBrush(Track(severity)))
+                { g.FillPath(tb, track); }
+            int w = (int)Math.Round(r.Width * Math.Max(0.0, Math.Min(100.0, pct)) / 100.0);
+            if (w > 0)
+            {
+                if (w < r.Height) w = r.Height; // keep the rounded cap legible near zero
+                Rectangle fr = new Rectangle(r.X, r.Y, w, r.Height);
+                using (GraphicsPath fill = RoundedRect(fr, r.Height / 2))
+                using (SolidBrush fb = new SolidBrush(severity))
+                    { g.FillPath(fb, fill); }
+            }
+        }
+
+        public static void DrawRing(Graphics g, RectangleF r, double pct, Color severity, float thickness)
+        {
+            using (Pen track = new Pen(Track(severity), thickness))
+                g.DrawEllipse(track, r);
+            float sweep = (float)(Math.Max(0.0, Math.Min(100.0, pct)) * 3.6);
+            if (sweep > 0f)
+            {
+                using (Pen fill = new Pen(severity, thickness))
+                {
+                    fill.StartCap = LineCap.Round;
+                    fill.EndCap = LineCap.Round;
+                    g.DrawArc(fill, r, -90f, sweep);
+                }
+            }
+        }
     }
 
     // borderless always-on-top window that never steals focus
@@ -44,6 +126,168 @@ namespace ClaudeUsageTray
             }
         }
         protected override bool ShowWithoutActivation { get { return true; } }
+
+        public OverlayForm()
+        {
+            DoubleBuffered = true;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Theme.Surface;
+        }
+    }
+
+    // rounded pill on the taskbar: [ring gauge] 71% 2h14m
+    class WidgetForm : OverlayForm
+    {
+        public string PctText = "-";
+        public string Remaining = "";
+        public double RingPct = 0;
+        public Color SeverityColor = Theme.InkMuted;
+
+        static readonly Font PctFont = new Font("Segoe UI Semibold", 10f);
+        static readonly Font RemFont = new Font("Segoe UI", 8.5f);
+        const int H = 28;
+        const int PadX = 11;
+        const int RingSize = 15;
+        const int Gap = 7;
+
+        public void UpdateData(string pctText, string remaining, double ringPct, Color severity)
+        {
+            PctText = pctText; Remaining = remaining; RingPct = ringPct; SeverityColor = severity;
+            using (Graphics g = CreateGraphics())
+            {
+                int w = PadX + RingSize + Gap + (int)Math.Ceiling(g.MeasureString(PctText, PctFont).Width);
+                if (Remaining.Length > 0)
+                    w += 2 + (int)Math.Ceiling(g.MeasureString(Remaining, RemFont).Width);
+                w += PadX;
+                if (Width != w || Height != H) { Size = new Size(w, H); Theme.ApplyRounded(this, H / 2); }
+            }
+            Invalidate();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Size = new Size(110, H);
+            Theme.ApplyRounded(this, H / 2);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+            Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (GraphicsPath pill = Theme.RoundedRect(r, r.Height / 2))
+            {
+                using (SolidBrush b = new SolidBrush(Theme.Surface)) g.FillPath(b, pill);
+                using (Pen p = new Pen(Theme.Hairline)) g.DrawPath(p, pill);
+            }
+
+            float t = 2.6f;
+            RectangleF ring = new RectangleF(PadX + t / 2, (H - RingSize) / 2f + t / 2, RingSize - t, RingSize - t);
+            Theme.DrawRing(g, ring, RingPct, SeverityColor, t);
+
+            float x = PadX + RingSize + Gap;
+            Color pctInk = (PctText == "-") ? Theme.InkMuted : Theme.InkPrimary;
+            SizeF ps = g.MeasureString(PctText, PctFont);
+            using (SolidBrush b = new SolidBrush(pctInk))
+                g.DrawString(PctText, PctFont, b, x, (H - ps.Height) / 2f);
+            if (Remaining.Length > 0)
+            {
+                SizeF rs = g.MeasureString(Remaining, RemFont);
+                using (SolidBrush b = new SolidBrush(Theme.InkMuted))
+                    g.DrawString(Remaining, RemFont, b, x + ps.Width + 2, (H - rs.Height) / 2f + 0.5f);
+            }
+        }
+    }
+
+    // detail card: title, two meter rows (5h / week), footer
+    class PopupForm : OverlayForm
+    {
+        public LastShown Data = null;
+
+        static readonly Font TitleFont = new Font("Segoe UI", 8f);
+        static readonly Font LabelFont = new Font("Segoe UI", 9f);
+        static readonly Font InfoFont = new Font("Segoe UI", 8f);
+        static readonly Font ValueFont = new Font("Segoe UI Semibold", 13f);
+        const int W = 320;
+        const int Pad = 14;
+
+        public PopupForm()
+        {
+            BackColor = Theme.SurfaceHi;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Size = new Size(W, 168);
+            Theme.ApplyRounded(this, 10);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+            Rectangle rr = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (GraphicsPath card = Theme.RoundedRect(rr, 10))
+            {
+                using (SolidBrush b = new SolidBrush(Theme.SurfaceHi)) g.FillPath(b, card);
+                using (Pen p = new Pen(Theme.Hairline)) g.DrawPath(p, card);
+            }
+
+            int y = Pad;
+            using (SolidBrush muted = new SolidBrush(Theme.InkMuted))
+            using (SolidBrush secondary = new SolidBrush(Theme.InkSecondary))
+            using (SolidBrush primary = new SolidBrush(Theme.InkPrimary))
+            {
+                g.DrawString("Claude Code usage", TitleFont, muted, Pad, y);
+                y += 22;
+
+                LastShown d = Data;
+                if (d == null || d.Pct == null)
+                {
+                    g.DrawString("no data", LabelFont, secondary, Pad, y + 8);
+                    return;
+                }
+
+                string reset5 = (d.Reset != null)
+                    ? "resets " + d.Reset.Value.ToString("HH:mm") + "  in " + TrayApp.FormatRemaining(d.Reset.Value) : "";
+                y = DrawRow(g, y, "5h session", d.Pct.Value, reset5, primary, secondary, muted);
+
+                if (d.WPct != null)
+                {
+                    string resetW = (d.WReset != null)
+                        ? "resets " + d.WReset.Value.ToString("MM/dd HH:mm") + "  in " + TrayApp.FormatRemaining(d.WReset.Value) : "";
+                    y = DrawRow(g, y, "week", (int)Math.Round(d.WPct.Value), resetW, primary, secondary, muted);
+                }
+
+                g.DrawString(d.Src + "  ·  updated " + d.Upd, InfoFont, muted, Pad, Height - Pad - 14);
+            }
+        }
+
+        int DrawRow(Graphics g, int y, string label, int pct, string info, SolidBrush primary, SolidBrush secondary, SolidBrush muted)
+        {
+            g.DrawString(label, LabelFont, secondary, Pad, y);
+            if (info.Length > 0)
+            {
+                SizeF isz = g.MeasureString(info, InfoFont);
+                g.DrawString(info, InfoFont, muted, Width - Pad - isz.Width, y + 1.5f);
+            }
+            y += 20;
+            string val = pct + "%";
+            g.DrawString(val, ValueFont, primary, Pad - 1, y - 3);
+            Color sev = Theme.Severity(pct);
+            Rectangle bar = new Rectangle(Pad + 56, y + 7, Width - Pad * 2 - 56, 6);
+            Theme.DrawMeter(g, bar, pct, sev);
+            return y + 30;
+        }
     }
 
     class ApiData
@@ -77,10 +321,8 @@ namespace ClaudeUsageTray
         string posFile;
 
         NotifyIcon notify;
-        OverlayForm widget;
-        Label wlabel;
-        OverlayForm popup;
-        Label plabel;
+        WidgetForm widget;
+        PopupForm popup;
         System.Windows.Forms.Timer timer;
         IntPtr prevIconHandle = IntPtr.Zero;
 
@@ -104,7 +346,8 @@ namespace ClaudeUsageTray
             notify.Visible = true;
 
             if (!noWidget) BuildWidget();
-            BuildPopup();
+            popup = new PopupForm();
+            popup.Click += delegate(object s, EventArgs e) { popup.Hide(); };
             BuildMenu();
 
             timer = new System.Windows.Forms.Timer();
@@ -173,7 +416,7 @@ namespace ClaudeUsageTray
             catch { return null; }
         }
 
-        static string FormatRemaining(DateTime target)
+        public static string FormatRemaining(DateTime target)
         {
             TimeSpan ts = target - DateTime.Now;
             if (ts.TotalSeconds <= 0) return "now";
@@ -224,11 +467,6 @@ namespace ClaudeUsageTray
 
         void UpdateTray()
         {
-            string text = "-";
-            Color color = Color.Gray;
-            string tip = "Claude usage: no data";
-            string wtext = "5h -";
-
             int? pct = null;
             DateTime? reset = null;
             double? wpct = null;
@@ -274,59 +512,45 @@ namespace ClaudeUsageTray
             l.Pct = pct; l.Reset = reset; l.WPct = wpct; l.WReset = wreset; l.Src = src; l.Upd = upd;
             last = l;
 
+            string pctText = "-", remText = "", tip = "Claude usage: no data";
+            double ringPct = 0;
+            Color sev = Theme.InkMuted;
+            string iconNum = "-";
             string wk = (wpct != null) ? " | wk " + ((int)Math.Round(wpct.Value)) + "%" : "";
+
             if (pct != null)
             {
                 if (src == "file" && reset != null && DateTime.Now >= reset.Value)
                 {
                     // 5h window already reset; real value arrives on next statusline write
-                    text = "0"; color = Color.Gray;
+                    pctText = "0%"; iconNum = "0"; ringPct = 0; sev = Theme.InkMuted;
                     tip = string.Format("5h: reset done (was {0}%){1} | {2} {3}", pct, wk, src, upd);
-                    wtext = "5h 0%";
                 }
                 else
                 {
-                    text = pct.Value.ToString();
-                    color = (pct >= 90) ? Color.OrangeRed : (pct >= 70) ? Color.Orange : Color.White;
+                    pctText = pct.Value + "%";
+                    iconNum = pct.Value.ToString();
+                    ringPct = pct.Value;
+                    sev = Theme.Severity(pct.Value);
+                    if (reset != null && (reset.Value - DateTime.Now).TotalSeconds > 0)
+                        remText = FormatRemaining(reset.Value);
                     string resetStr = (reset != null) ? " (reset " + reset.Value.ToString("HH:mm") + ")" : "";
                     tip = string.Format("5h {0}%{1}{2} | {3} {4}", pct, resetStr, wk, src, upd);
-                    string rem = (reset != null && (reset.Value - DateTime.Now).TotalSeconds > 0)
-                        ? " (" + FormatRemaining(reset.Value) + ")" : "";
-                    wtext = string.Format("5h {0}%{1}", pct, rem);
                 }
             }
 
-            SetTrayIcon(text, color, tip);
-            if (wlabel != null)
+            SetTrayIcon(iconNum, ringPct, sev, tip);
+            if (widget != null) widget.UpdateData(pctText, remText, ringPct, sev);
+            if (popup != null)
             {
-                wlabel.Text = wtext;
-                wlabel.ForeColor = color;
-                widget.TopMost = true; // re-assert above the taskbar
+                popup.Data = last;
+                if (popup.Visible) popup.Invalidate();
             }
-            if (popup != null && popup.Visible) plabel.Text = BuildDetailText();
         }
 
-        string BuildDetailText()
-        {
-            LastShown l = last;
-            if (l == null || l.Pct == null) return "Claude usage: no data";
-            StringBuilder sb = new StringBuilder();
-            sb.Append(string.Format("5h   : {0}%", l.Pct));
-            if (l.Reset != null)
-                sb.Append(string.Format("   resets {0} (in {1})", l.Reset.Value.ToString("HH:mm"), FormatRemaining(l.Reset.Value)));
-            if (l.WPct != null)
-            {
-                sb.Append(string.Format("\nweek : {0}%", (int)Math.Round(l.WPct.Value)));
-                if (l.WReset != null)
-                    sb.Append(string.Format("   resets {0} (in {1})", l.WReset.Value.ToString("MM/dd HH:mm"), FormatRemaining(l.WReset.Value)));
-            }
-            sb.Append(string.Format("\nsrc  : {0}   updated {1}", l.Src, l.Upd));
-            return sb.ToString();
-        }
+        // ---------- icon (ring gauge + number) ----------
 
-        // ---------- icon ----------
-
-        void SetTrayIcon(string text, Color color, string tip)
+        void SetTrayIcon(string num, double ringPct, Color severity, string tip)
         {
             Bitmap bmp = new Bitmap(32, 32);
             using (Graphics g = Graphics.FromImage(bmp))
@@ -334,14 +558,18 @@ namespace ClaudeUsageTray
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 g.Clear(Color.Transparent);
-                float fontSize = (text.Length >= 3) ? 15f : 20f;
-                using (Font font = new Font("Segoe UI", fontSize, FontStyle.Bold, GraphicsUnit.Pixel))
-                using (SolidBrush brush = new SolidBrush(color))
+                float t = 4.5f;
+                RectangleF ring = new RectangleF(t / 2 + 1, t / 2 + 1, 30 - t, 30 - t);
+                Theme.DrawRing(g, ring, ringPct, severity, t);
+                float fs = (num.Length >= 3) ? 10f : (num.Length == 2) ? 12f : 13f;
+                Color ink = (num == "-") ? Theme.InkMuted : Theme.InkPrimary;
+                using (Font font = new Font("Segoe UI", fs, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (SolidBrush brush = new SolidBrush(ink))
                 using (StringFormat sf = new StringFormat())
                 {
                     sf.Alignment = StringAlignment.Center;
                     sf.LineAlignment = StringAlignment.Center;
-                    g.DrawString(text, font, brush, new RectangleF(0, 0, 32, 32), sf);
+                    g.DrawString(num, font, brush, new RectangleF(0, 0, 32, 33), sf);
                 }
             }
             IntPtr hIcon = bmp.GetHicon();
@@ -357,23 +585,7 @@ namespace ClaudeUsageTray
 
         void BuildWidget()
         {
-            widget = new OverlayForm();
-            widget.FormBorderStyle = FormBorderStyle.None;
-            widget.ShowInTaskbar = false;
-            widget.TopMost = true;
-            widget.StartPosition = FormStartPosition.Manual;
-            widget.BackColor = Color.FromArgb(16, 16, 16);
-            widget.AutoSize = true;
-            widget.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-
-            wlabel = new Label();
-            wlabel.AutoSize = true;
-            wlabel.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
-            wlabel.ForeColor = Color.Gray;
-            wlabel.BackColor = widget.BackColor;
-            wlabel.Text = "5h -";
-            wlabel.Padding = new Padding(6, 3, 6, 3);
-            widget.Controls.Add(wlabel);
+            widget = new WidgetForm();
 
             // saved position wins over auto-snap
             try
@@ -388,11 +600,11 @@ namespace ClaudeUsageTray
             catch { }
 
             // drag to move (saved on release); a click without movement toggles the detail popup
-            wlabel.MouseDown += delegate(object s, MouseEventArgs e)
+            widget.MouseDown += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button == MouseButtons.Left) { dragOff = e.Location; dragStart = Cursor.Position; }
             };
-            wlabel.MouseMove += delegate(object s, MouseEventArgs e)
+            widget.MouseMove += delegate(object s, MouseEventArgs e)
             {
                 if (dragOff != null)
                 {
@@ -400,7 +612,7 @@ namespace ClaudeUsageTray
                     widget.Location = new Point(p.X - dragOff.Value.X, p.Y - dragOff.Value.Y);
                 }
             };
-            wlabel.MouseUp += delegate(object s, MouseEventArgs e)
+            widget.MouseUp += delegate(object s, MouseEventArgs e)
             {
                 if (dragOff == null) return;
                 dragOff = null;
@@ -443,32 +655,10 @@ namespace ClaudeUsageTray
 
         // ---------- popup ----------
 
-        void BuildPopup()
-        {
-            popup = new OverlayForm();
-            popup.FormBorderStyle = FormBorderStyle.None;
-            popup.ShowInTaskbar = false;
-            popup.TopMost = true;
-            popup.StartPosition = FormStartPosition.Manual;
-            popup.BackColor = Color.FromArgb(24, 24, 24);
-            popup.AutoSize = true;
-            popup.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-
-            plabel = new Label();
-            plabel.AutoSize = true;
-            plabel.Font = new Font("Consolas", 10f);
-            plabel.ForeColor = Color.White;
-            plabel.BackColor = popup.BackColor;
-            plabel.Padding = new Padding(12, 8, 12, 8);
-            popup.Controls.Add(plabel);
-            plabel.Click += delegate(object s, EventArgs e) { popup.Hide(); };
-        }
-
         void TogglePopup()
         {
             if (popup.Visible) { popup.Hide(); return; }
-            plabel.Text = BuildDetailText();
-            popup.PerformLayout();
+            popup.Data = last;
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             int ax = (widget != null) ? widget.Location.X : Cursor.Position.X;
             int x = Math.Max(wa.Left + 8, Math.Min(ax, wa.Right - popup.Width - 8));
@@ -476,6 +666,7 @@ namespace ClaudeUsageTray
             popup.Location = new Point(x, y);
             popup.Show();
             popup.TopMost = true;
+            popup.Invalidate();
         }
 
         // ---------- menu ----------
@@ -511,7 +702,7 @@ namespace ClaudeUsageTray
                 ExitThread();
             };
             notify.ContextMenuStrip = menu;
-            if (wlabel != null) wlabel.ContextMenuStrip = menu;
+            if (widget != null) widget.ContextMenuStrip = menu;
             notify.MouseClick += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button == MouseButtons.Left) TogglePopup();
